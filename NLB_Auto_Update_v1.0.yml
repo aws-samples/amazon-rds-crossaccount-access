@@ -1,0 +1,389 @@
+#Copyright 2022 Amazon.com and its affiliates; all rights reserved. This file is AWS Content and may not be duplicated or distributed without permission.
+# https://aws.amazon.com/agreement
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'This CloudFormation Template (CFT) will create all the required AWS components to synchronize IP address from RDS, RDS Proxy and Aurora Cluster to Amazon Network Load Balancer Target group.
+              You will need to supply Stack Name, a Lambda Function name, RDS or Aurora Name, select the type of service, 
+              Endpoint of RDS/RDS Proxy or Aurora Cluster and respective port number, NLB Target group ARN, private Subnet groups and security group.'
+
+## ============================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: 'Lambda Parameters'
+        Parameters:          
+        - pLambdaName
+        - pRDSType
+        - pDBEndPoint
+        - pRDSPOrt
+
+      - Label:
+          default: 'VPC input for Lambda'
+        Parameters: 
+        - pVPCid         
+        - pSubnetsGroup
+        - pSecurityGroup
+        - pTargetRoleARN
+
+    ParameterLabels: 
+      pRDSType:
+        default: "Select RDS Type"
+      pDBEndPoint:
+        default: "Enter (Amazon Aurora/Amazon RDS/Amazon RDS Proxy) Endpoint"
+      pRDSPOrt:
+        default: "Enter RDS Port"
+      pLambdaName: 
+        default: "Enter Lambda Function Name"
+      pVPCid:
+        default: "Select VPC from the list"
+      pSubnetsGroup: 
+        default: "Select Subnets"
+      pSecurityGroup: 
+        default: "Select Security Group for Lambda"
+      pTargetRoleARN:
+        default: "Provide Role ARN of target Account/VPC"
+        
+        
+## ============================
+## ==== Parameter Assignment===
+
+Parameters:
+  pVPCid:
+    Type: List<AWS::EC2::VPC::Id>   
+  pSubnetsGroup:
+    Type: List<AWS::EC2::Subnet::Id>      
+  pSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+  pTargetRoleARN:
+    Type: String
+    MinLength: '1'
+    MaxLength: '256'
+
+  pRDSType:
+    AllowedValues:
+      - db-cluster
+      - db-instance
+    Default: db-cluster
+    Type: String
+
+  pLambdaName:
+    Type: String
+    Default: "NLBAutoUpdate"
+    MinLength: '1'
+    MaxLength: '128'
+    AllowedPattern: '^[a-zA-Z]+[0-9a-zA-Z\-]*$'
+
+  pRDSPOrt:
+    Type: Number
+    Default: 5432
+    MinValue: 1115
+    MaxValue: 65535
+
+  pDBEndPoint: 
+    Type: String
+    MinLength: '1'
+    MaxLength: '128'
+
+   
+## =====================================
+##======================================
+Resources:
+
+## ==== IAM Role for S3 Buket access 
+ rLambdaPrivsRole:
+   Type: AWS::IAM::Role
+   Properties:
+     AssumeRolePolicyDocument:
+       Version: '2012-10-17'
+       Statement:
+       - Effect: Allow
+         Principal:
+           Service:
+           - lambda.amazonaws.com
+         Action:
+         - sts:AssumeRole
+     Path: "/"
+     Policies:
+       - PolicyName: !Sub 'UpdateNLBIpPolicy${AWS::StackName}'
+         PolicyDocument:
+           Version: '2012-10-17'
+           Statement:
+           - Effect: Allow
+             Action:
+             - ec2:CreateNetworkInterface 
+             - ec2:DeleteNetworkInterface 
+             - ec2:DescribeNetworkInterfaces
+             - elasticloadbalancing:DescribeTargetHealth
+             - elasticloadbalancing:DeregisterTargets
+             - elasticloadbalancing:RegisterTargets
+             Resource: "*"
+           - Effect: Allow
+             Action:
+             - logs:CreateLogGroup
+             Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+           - Effect: Allow
+             Action:
+             - logs:CreateLogStream
+             - logs:PutLogEvents
+             Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${pLambdaName}:*'
+     ManagedPolicyArns:
+       - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     RoleName: !Sub "UpdateNLBIpRole-${AWS::StackName}"
+    
+
+## ======= Create lambda ==========
+ rLambdaNLBUpdate:
+   Type: AWS::Lambda::Function
+   Properties:
+     VpcConfig:
+       SecurityGroupIds: 
+       - !Ref pSecurityGroup
+       SubnetIds: !Ref pSubnetsGroup
+     FunctionName: !Join 
+                    - ''
+                    - - !Ref pLambdaName
+                      - '-'
+                      - !Sub ${AWS::StackName}
+     Runtime: python3.9
+     Role: !GetAtt rLambdaPrivsRole.Arn
+     Handler: index.lambda_handler
+     Environment:
+       Variables: 
+         Cluster_EndPoint: !Ref pDBEndPoint
+         RDS_Port: !Ref pRDSPOrt
+         NLB_TG_ARN: !Ref rNetworkLoadBalancerTargetGroup
+     Code:
+       ZipFile: |
+        import os
+        import json
+        import socket
+        import sys
+        import boto3
+        
+        # Get Environment varilables
+        vCluster = os.environ.get('Cluster_EndPoint')
+        vELB_arn = os.environ.get('NLB_TG_ARN')
+        vNewPort = os.environ.get('RDS_Port')
+        client = boto3.client('elbv2')
+        
+        def lambda_handler(event, context):
+        
+            # DeRegister old IP from NLB
+            def deregister_oldip(vOldIp, vOldPort, vOldAZ):
+                response = client.deregister_targets(
+                    TargetGroupArn=vELB_arn,
+                    Targets=[
+                        {
+                            'Id': vOldIp,
+                            'Port': vOldPort,
+                            'AvailabilityZone': vOldAZ
+                        },
+                    ]
+                )
+        
+        # Register new IP to NLB
+            def register_newip(vNewIP, vNewPort):
+                response = client.register_targets(
+                    TargetGroupArn=vELB_arn,
+                    Targets=[
+                        {
+                            'Id': vNewIP,
+                            'Port': int(vNewPort)
+                        },
+                    ]
+                )
+        
+        # Get Master Node IP address
+            vNewIP = socket.gethostbyname_ex(vCluster)    
+            IPs = vNewIP[2]
+            print('IP list from DNS: ', IPs)
+        
+        # Get Registered IP detail from NLB        
+            dictNLB = client.describe_target_health(
+                TargetGroupArn=vELB_arn
+            )
+        
+            ip_list = []
+            for i in  dictNLB['TargetHealthDescriptions']:
+                ip = i.get('Target').get('Id')
+                ip_list.append(ip)
+        
+            if not ip_list:
+                for nIP in IPs:
+                    print('Register New IP ', nIP, 'Port: ', vNewPort)
+                    register_newip(nIP, vNewPort)
+        
+            DeRegisterIP = set(ip_list) - set(IPs)
+            RegisterIP = set(IPs) - set(ip_list)
+            
+            if DeRegisterIP:
+                print('IP: ', str(DeRegisterIP), ' will be DeRegistered from NLB Target')
+            
+            if RegisterIP:
+                print('IP: ', str(RegisterIP), ' will be registered to NLB Target')
+        
+            for nIP in RegisterIP:
+                print('Registering New IP ', nIP, 'Port: ', vNewPort)
+                register_newip(nIP, vNewPort)
+                
+            for oIP in dictNLB['TargetHealthDescriptions']:
+                vOldIp = oIP.get('Target').get('Id')
+                vOldPort = oIP.get('Target').get('Port')
+                vOldAZ = oIP.get('Target').get('AvailabilityZone')
+                print('IP list from NLB Target Group: ', vOldIp)
+                if vOldIp in DeRegisterIP:
+                    print('DeRegister IP: ', vOldIp, 'Port; ', vOldPort, 'AZ: ', vOldAZ)
+                    deregister_oldip(vOldIp, vOldPort, vOldAZ)
+
+     Description: "Lambda function to update NLB target group IP address"
+     TracingConfig:
+       Mode: Active
+      
+ rLambdaTriggerTopic:
+   Type: AWS::SNS::Topic
+   Properties:
+    TopicName: !Sub "LambdaForNLBUpdate${AWS::StackName}"
+
+ rAttachTopicPolicy:
+   Type: AWS::SNS::TopicPolicy
+   Properties:
+     PolicyDocument:
+       Version: "2008-10-17"
+       Id: "__default_policy_ID"
+       Statement: 
+           - Sid: "__default_statement_ID"
+             Effect: "Allow"
+             Principal:
+               AWS: "*"
+             Action:
+              - SNS:GetTopicAttributes
+              - SNS:SetTopicAttributes
+              - SNS:AddPermission
+              - SNS:RemovePermission
+              - SNS:DeleteTopic
+              - SNS:Subscribe
+              - SNS:ListSubscriptionsByTopic
+              - SNS:Publish
+              - SNS:Receive
+             Resource: 
+              - !Ref rLambdaTriggerTopic
+             Condition:
+               StringEquals:
+                 AWS:SourceOwner: !Sub "${AWS::AccountId}"
+     Topics:
+       - !Ref rLambdaTriggerTopic
+
+ rLambdaTriggerSubscription:
+   Type: AWS::SNS::Subscription
+   Properties:
+      Endpoint: !GetAtt rLambdaNLBUpdate.Arn
+      Protocol: lambda
+      TopicArn: !Ref rLambdaTriggerTopic
+
+ rEventSubscription:
+   Type: AWS::RDS::EventSubscription
+   Properties:
+     EventCategories:
+       - failover
+       - failure
+     SnsTopicArn: !Ref rLambdaTriggerTopic
+     SourceIds:
+       - !Select [0, !Split [".", !Ref pDBEndPoint]]
+     SourceType: !Ref "pRDSType"
+     Enabled: true  
+
+ rSnsLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt rLambdaNLBUpdate.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref rLambdaTriggerTopic
+
+ rNetworkLoadBalancer:
+   Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+   Properties:
+     Name: !Sub 'NLB-RDS-${AWS::StackName}'
+     Scheme: internal
+     Subnets: !Ref pSubnetsGroup
+     Type: network
+     
+ rNetworkLoadBalancerTargetGroup:
+   Type: AWS::ElasticLoadBalancingV2::TargetGroup
+   Properties:
+     Name: !Sub 'NLB-TG-RDS-${AWS::StackName}'
+     Port: !Ref pRDSPOrt
+     TargetType: ip
+     Protocol: TCP
+     VpcId: !Select [0, !Ref pVPCid]
+     HealthCheckEnabled: True
+     HealthCheckIntervalSeconds: 10
+     HealthCheckPort: !Ref pRDSPOrt
+     HealthCheckProtocol: TCP
+     HealthCheckTimeoutSeconds: 10
+     HealthyThresholdCount: 3
+     TargetGroupAttributes:
+       - Key: deregistration_delay.timeout_seconds
+         Value: 0
+     
+ rNetworkLoadBalancerListener:
+   Type: AWS::ElasticLoadBalancingV2::Listener
+   Properties:
+     DefaultActions:
+       - Type: forward
+         TargetGroupArn: !Ref rNetworkLoadBalancerTargetGroup
+     LoadBalancerArn: !Ref rNetworkLoadBalancer
+     Port: !Ref pRDSPOrt
+     Protocol: TCP
+     
+ rVPCEndpointService:    
+   Type: AWS::EC2::VPCEndpointService
+   Properties: 
+     AcceptanceRequired: no
+     NetworkLoadBalancerArns: 
+       - !Ref rNetworkLoadBalancer 
+        
+ rVPCEndpointServicePermission:  
+   Type: AWS::EC2::VPCEndpointServicePermissions
+   Properties: 
+     AllowedPrincipals: 
+       - !Ref pTargetRoleARN
+     ServiceId: !Ref rVPCEndpointService        
+      
+## Export and Output
+## ========================
+Outputs:
+
+  oLambdaPrivsRole:
+    Description: 'Role for Lambda function'
+    Value: !Ref rLambdaPrivsRole         
+
+  oLambdaName:
+    Description: 'Lambda function name'
+    Value: !Join 
+           - ''
+           - - !Ref pLambdaName
+             - '-'
+             - !Sub ${AWS::StackName}
+
+  oLambdaTriggerTopic:
+    Description: 'SNS Topic name'
+    Value: !GetAtt rLambdaTriggerTopic.TopicName
+ 
+  oLambdaTriggerSubscription:
+    Description: 'SNS Topic subscription'
+    Value: !Ref rLambdaTriggerSubscription         
+
+  oEventSubscription:
+    Description: 'RDS Event subscription'
+    Value: !Ref rEventSubscription         
+
+  oSnsLambdaInvokePermission:
+    Description: 'Lambda Invoke Permission'
+    Value: !Ref rSnsLambdaInvokePermission 
+    
+  oVPCEndpointService:
+    Description: 'VPC Endpoint Servie'
+    Value: !Ref rVPCEndpointService     
