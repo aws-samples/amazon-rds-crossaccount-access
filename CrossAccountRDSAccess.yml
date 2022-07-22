@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT-0
 
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'This CloudFormation Template (CFT) will create all the required AWS components to synchronize IP address from RDS, RDS Proxy and Aurora Cluster to Amazon Network Load Balancer Target group.
-              You will need to supply Stack Name, a Lambda Function name, RDS or Aurora Name, select the type of service, 
+Description: 'This CloudFormation Template (CFT) will create all the required AWS components to establish database connectivity across AWS Accounts or VPCs, 
+              For example AWS Lambda function to synchronize IP address from RDS, RDS Proxy and Aurora Cluster to Amazon Network Load Balancer Target group.
+              You will need to supply Stack Name, a Lambda Function name, RDS or Aurora Name, select the type of service, IAM Role ARN, 
               Endpoint of RDS/RDS Proxy or Aurora Cluster and respective port number, NLB Target group ARN, private Subnet groups and security group.'
 
 ## ============================
@@ -352,7 +353,7 @@ Resources:
        - !Ref pTargetRoleARN
      ServiceId: !Ref rVPCEndpointService        
       
-## Export and Output
+## Output Section
 ## ========================
 Outputs:
 
