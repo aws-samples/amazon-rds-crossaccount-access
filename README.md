@@ -71,22 +71,22 @@ We will create an IAM role in client account, later we will be using Amazon Reso
 To create an IAM role in VPC-A, you [create an IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-service.html "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-service.html") with AssumeRole trust relationships. Then you attach the following IAM policy with least required privileges to the role:
 
 
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "VisualEditor0",
-            "Effect": "Allow",
-            "Action": [
-                "ec2:Describe*",
-                "ec2:CreateTags",
-                "ec2:CreateVpcEndpoint",
-                "route53:AssociateVPCWithHostedZone"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
+    {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "VisualEditor0",
+                "Effect": "Allow",
+                "Action": [
+                    "ec2:Describe*",
+                    "ec2:CreateTags",
+                    "ec2:CreateVpcEndpoint",
+                    "route53:AssociateVPCWithHostedZone"
+                ],
+                "Resource": "*"
+            }
+        ]
+    }
 
 
 ## Launch a CloudFormation stack in VPC-B
