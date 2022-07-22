@@ -10,7 +10,6 @@ AWS PrivateLink provides private connectivity between VPCs, AWS services, and yo
 Network Load Balancer functions at the fourth layer of the Open Systems Interconnection (OSI) model. It can handle millions of requests per second. After the load balancer receives a connection request, it selects a target from the target group for the default rule. It attempts to relay a TCP connection to the selected target on the port specified in the listener configuration.
 
 _Failover_ is a high availability feature that replaces a database instance with another one when the original instance becomes unavailable. A failover might happen because of a problem with a database instance. It might also be part of normal maintenance procedures, such as during a database upgrade. Failover applies to RDS DB instances in a Multi-AZ configuration, and Aurora DB clusters with one or more reader instances in addition to the writer instance. [Target groups](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-target-groups.html) for Network Load Balancer use IPv4 and IPv6 target IP addresses. Amazon RDS and Aurora change their IP address in the event of database failover. Therefore, database clients connecting to Amazon RDS using a Network Load Balancer endpoint receive an error if the RDS database has failed over and the new database instance IP address hasn’t been updated to the Network Load Balancer target group.
-<![endif]-->
 
 ## Why Network Load Balancer for Amazon RDS?
 
